@@ -1,5 +1,6 @@
 from telegram import Bot
 from app.utils.html import esc
+from datetime import timedelta
 
 class TelegramNotifier:
     def __init__(self, token, group_id):
@@ -15,14 +16,14 @@ class TelegramNotifier:
         line = f"\n📏 <b>Line:</b> {esc(a.line)}" if a.line is not None else ""
         warnings = "\n".join("⚠️ " + esc(w) for w in a.warnings) if a.warnings else "✅ Katta shubhali anomaliya topilmadi"
         signal_code = getattr(a, "signal_code", "") or "NEW"
-
+        uz_time = a.commence_time + timedelta(hours=5)
         text = f"""🎯 <b>AI SPORTS ADVISOR SIGNAL</b>
 
 🆔 <b>Signal ID:</b> {esc(signal_code)}
 
 🏟 <b>Sport:</b> {esc(a.sport_title)}
 🆚 <b>Match:</b> {esc(a.match_name)}
-⏰ <b>Start:</b> {esc(a.commence_time.strftime('%Y-%m-%d %H:%M UTC'))}
+⏰ <b>Start (UZT):</b> {esc(uz_time.strftime('%Y-%m-%d %H:%M'))}
 
 📌 <b>Market:</b> {esc(a.market_label)}
 ✅ <b>Pick:</b> {esc(a.pick)}{line}
