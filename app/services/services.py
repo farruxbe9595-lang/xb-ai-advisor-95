@@ -37,15 +37,37 @@ class SignalService:
                 for a in analyses[:settings.max_signals_per_event]:
                     if await self.repo.save_signal(a): await self.notifier.send_signal(a, await self.explainer.explain(a))
 class ResultTracker:
-    def __init__(self,repo,notifier,api_sports): self.repo=repo; self.notifier=notifier; self.api_sports=api_sports
+    def __init__(self, repo, notifier, api_sports):
+        self.repo = repo
+        self.notifier = notifier
+        self.api_sports = api_sports
+
     async def run_once(self):
         for s in await self.repo.pending_signals():
-            api_id=await self.repo.get_event_link(s['event_id']); payload=None
-            if api_id and str(s['sport_key']).startswith('basketball'): payload=await self.api_sports.basketball_result(api_id)
-            elif api_id and str(s['sport_key']).startswith('tennis'): payload=await self.api_sports.tennis_result(api_id)
-            status,text=evaluate_signal(s,payload)
-            if status in {'won','lost','void'}:
-                await self.repo.mark_signal(s['id'],status,text); await self.notifier.send_result(('✅' if status=='won' else '❌')+f" NATIJA\nMatch:{s['match_name']}\nMarket:{s['market_label']}\nPick:{s['pick']}\n{text}")
+            api_id = await self.repo.get_event_link(s["event_id"])
+            payload = None
+
+            if api_id and str(s["sport_key"]).startswith("basketball"):
+                payload = await self.api_sports.basketball_result(api_id)
+            elif api_id and str(s["sport_key"]).startswith("tennis"):
+                payload = await self.api_sports.tennis_result(api_id)
+
+            status, text = evaluate_signal(s, payload)
+
+            if status in {"won", "lost", "void"}:
+                signal_code = s.get("signal_code") or f"SIG-{s['id']:04d}"
+
+                await self.repo.mark_signal(s["id"], status, text)
+
+                await self.notifier.send_result(
+                    ("✅" if status == "won" else "❌") +
+                    f" NATIJA\n"
+                    f"ID: {signal_code}\n"
+                    f"Match: {s['match_name']}\n"
+                    f"Market: {s['market_label']}\n"
+                    f"Pick: {s['pick']}\n"
+                    f"{text}"
+                )
 class ReportService:
     def __init__(self,repo,notifier): self.repo=repo; self.notifier=notifier
     async def run_once(self):
