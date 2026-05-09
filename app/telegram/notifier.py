@@ -1,12 +1,24 @@
 from telegram import Bot
 from app.utils.html import esc
+
 class TelegramNotifier:
-    def __init__(self,token,group_id): self.enabled=bool(token and group_id); self.group_id=group_id; self.bot=Bot(token=token) if token else None
-    async def send_signal(self,a,explanation):
-        if not self.enabled or self.bot is None: print('SIGNAL',a); return
-        line=f"\n📏 <b>Line:</b> {esc(a.line)}" if a.line is not None else ''
-        warnings='\n'.join('⚠️ '+esc(w) for w in a.warnings) if a.warnings else '✅ Katta shubhali anomaliya topilmadi'
-        text=f"""🎯 <b>AI SPORTS ADVISOR SIGNAL</b>
+    def __init__(self, token, group_id):
+        self.enabled = bool(token and group_id)
+        self.group_id = group_id
+        self.bot = Bot(token=token) if token else None
+
+    async def send_signal(self, a, explanation):
+        if not self.enabled or self.bot is None:
+            print("SIGNAL", a)
+            return
+
+        line = f"\n📏 <b>Line:</b> {esc(a.line)}" if a.line is not None else ""
+        warnings = "\n".join("⚠️ " + esc(w) for w in a.warnings) if a.warnings else "✅ Katta shubhali anomaliya topilmadi"
+        signal_code = getattr(a, "signal_code", "") or "NEW"
+
+        text = f"""🎯 <b>AI SPORTS ADVISOR SIGNAL</b>
+
+🆔 <b>Signal ID:</b> {esc(signal_code)}
 
 🏟 <b>Sport:</b> {esc(a.sport_title)}
 🆚 <b>Match:</b> {esc(a.match_name)}
@@ -32,8 +44,23 @@ class TelegramNotifier:
 {warnings}
 
 <i>Avtomatik pul tikish emas. Yakuniy qaror operatorniki.</i>"""
-        await self.bot.send_message(chat_id=self.group_id,text=text,parse_mode='HTML')
-    async def send_result(self,text):
-        if not self.enabled or self.bot is None: print(text); return
-        await self.bot.send_message(chat_id=self.group_id,text=esc(text),parse_mode='HTML')
-    async def send_plain(self,text): await self.send_result(text)
+
+        await self.bot.send_message(
+            chat_id=self.group_id,
+            text=text,
+            parse_mode="HTML"
+        )
+
+    async def send_result(self, text):
+        if not self.enabled or self.bot is None:
+            print(text)
+            return
+
+        await self.bot.send_message(
+            chat_id=self.group_id,
+            text=esc(text),
+            parse_mode="HTML"
+        )
+
+    async def send_plain(self, text):
+        await self.send_result(text)
