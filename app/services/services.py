@@ -228,31 +228,47 @@ class ReportService:
         self.notifier = notifier
 
     async def run_once(self):
-        if datetime.now().hour != settings.daily_report_hour:
-            return
+    all_events = []
+    sport_list = [s.strip() for s in settings.sport_keys.split(',') if s.strip()]
+    print(f"[SIGNAL] sports={sport_list}")
 
-        today = date.today().isoformat()
+    for sk in sport_list:
+        try:
+            print(f"[FETCH] {sk} started")
+            events = await self.odds.fetch_events_for_sport(sk)
+            print(f"[FETCH] {sk} events={len(events)}")
+        except Exception as er:
+            print('[FETCH ERROR]', sk, repr(er))
+            continue
 
-        if await self.repo.daily_report_sent(today):
-            return
+        accepted = 0
+        for e in events:
+            hrs = (e.commence_time - datetime.now(timezone.utc)).total_seconds() / 3600
+            if not (-1 <= hrs <= settings.max_hours_before_match):
+                continue
+            all_events.append(e)
+            accepted += 1
 
-        stats = await self.repo.stats_summary()
-        perf = await self.repo.performance_by_market()
+        print(f"[FILTER] {sk} accepted_by_time={accepted}")
 
-        lines = [
-            f'DAILY REPORT {today}',
-            f"P/L: {await self.repo.daily_pl()}",
-            f"Pending:{stats.get('pending', 0)} Won:{stats.get('won', 0)} Lost:{stats.get('lost', 0)}"
-        ]
+    all_events.sort(key=lambda e: (self.event_day_rank(e.commence_time), e.commence_time))
+    print(f"[ANALYZE] total_events={len(all_events)}")
 
-        for r in perf[:5]:
-            total = r['total'] or 0
-            won = r['won'] or 0
-            lines.append(f"{r['sport_key']}/{r['market_key']}: {won}/{total}")
+    sent = 0
+    for e in all_events:
+        best = await self.best_analysis_for_event(e)
+        if best is None:
+            print(f"[NO SIGNAL] {e.sport_key} | {e.home_team} vs {e.away_team}")
+            continue
 
-        await self.notifier.send_plain('\n'.join(lines))
-        await self.repo.mark_daily_report_sent(today)
+        if await self.repo.save_signal(best):
+            sent += 1
+            print(f"[SIGNAL SENT] {e.sport_key} | {e.home_team} vs {e.away_team} | {best.market_key} | {best.pick}")
+            await self.notifier.send_signal(best, await self.explainer.explain(best))
+        else:
+            print(f"[DUPLICATE] {e.sport_key} | {e.home_team} vs {e.away_team}")
 
+    print(f"[SIGNAL] finished sent={sent}")
 
 class LiveService:
     def __init__(self, notifier):
