@@ -157,13 +157,20 @@ class SignalService:
 
     async def run_once(self):
         all_events = []
+        sport_list = [s.strip() for s in settings.sport_keys.split(',') if s.strip()]
 
-        for sk in [s.strip() for s in settings.sport_keys.split(',') if s.strip()]:
+        print(f"[SIGNAL] sports={sport_list}")
+
+        for sk in sport_list:
             try:
+                print(f"[FETCH] {sk} started")
                 events = await self.odds.fetch_events_for_sport(sk)
+                print(f"[FETCH] {sk} events={len(events)}")
             except Exception as er:
-                print('Fetch error', sk, er)
+                print('[FETCH ERROR]', sk, repr(er))
                 continue
+
+            accepted = 0
 
             for e in events:
                 hrs = (e.commence_time - datetime.now(timezone.utc)).total_seconds() / 3600
@@ -172,20 +179,44 @@ class SignalService:
                     continue
 
                 all_events.append(e)
+                accepted += 1
 
-        all_events.sort(key=lambda e: (self.event_day_rank(e.commence_time), e.commence_time))
+            print(f"[FILTER] {sk} accepted_by_time={accepted}")
+
+        all_events.sort(
+            key=lambda e: (
+                self.event_day_rank(e.commence_time),
+                e.commence_time
+            )
+        )
+
+        print(f"[ANALYZE] total_events={len(all_events)}")
+
+        sent = 0
 
         for e in all_events:
             best = await self.best_analysis_for_event(e)
 
             if best is None:
+                print(f"[NO SIGNAL] {e.sport_key} | {e.home_team} vs {e.away_team}")
                 continue
 
             if await self.repo.save_signal(best):
+                sent += 1
+                print(
+                    f"[SIGNAL SENT] {e.sport_key} | "
+                    f"{e.home_team} vs {e.away_team} | "
+                    f"{best.market_key} | {best.pick}"
+                )
+
                 await self.notifier.send_signal(
                     best,
                     await self.explainer.explain(best)
                 )
+            else:
+                print(f"[DUPLICATE] {e.sport_key} | {e.home_team} vs {e.away_team}")
+
+        print(f"[SIGNAL] finished sent={sent}")
 
 
 class ResultTracker:
@@ -228,47 +259,8 @@ class ReportService:
         self.notifier = notifier
 
     async def run_once(self):
-    all_events = []
-    sport_list = [s.strip() for s in settings.sport_keys.split(',') if s.strip()]
-    print(f"[SIGNAL] sports={sport_list}")
+        return
 
-    for sk in sport_list:
-        try:
-            print(f"[FETCH] {sk} started")
-            events = await self.odds.fetch_events_for_sport(sk)
-            print(f"[FETCH] {sk} events={len(events)}")
-        except Exception as er:
-            print('[FETCH ERROR]', sk, repr(er))
-            continue
-
-        accepted = 0
-        for e in events:
-            hrs = (e.commence_time - datetime.now(timezone.utc)).total_seconds() / 3600
-            if not (-1 <= hrs <= settings.max_hours_before_match):
-                continue
-            all_events.append(e)
-            accepted += 1
-
-        print(f"[FILTER] {sk} accepted_by_time={accepted}")
-
-    all_events.sort(key=lambda e: (self.event_day_rank(e.commence_time), e.commence_time))
-    print(f"[ANALYZE] total_events={len(all_events)}")
-
-    sent = 0
-    for e in all_events:
-        best = await self.best_analysis_for_event(e)
-        if best is None:
-            print(f"[NO SIGNAL] {e.sport_key} | {e.home_team} vs {e.away_team}")
-            continue
-
-        if await self.repo.save_signal(best):
-            sent += 1
-            print(f"[SIGNAL SENT] {e.sport_key} | {e.home_team} vs {e.away_team} | {best.market_key} | {best.pick}")
-            await self.notifier.send_signal(best, await self.explainer.explain(best))
-        else:
-            print(f"[DUPLICATE] {e.sport_key} | {e.home_team} vs {e.away_team}")
-
-    print(f"[SIGNAL] finished sent={sent}")
 
 class LiveService:
     def __init__(self, notifier):
