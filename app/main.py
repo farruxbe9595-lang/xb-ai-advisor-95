@@ -7,10 +7,14 @@ from app.telegram.notifier import TelegramNotifier
 from app.telegram.commands import CommandBot
 from app.data.api_sports import ApiSportsClient
 from app.services.services import SignalService,ResultTracker,ReportService,LiveService
-async def loop_forever(name,interval,fn):
+async def loop_forever(name, interval, fn):
     while True:
-        try: await fn()
-        except Exception as e: print(name,'error:',repr(e))
+        try:
+            print(f"[{name}] scan started")
+            await fn()
+            print(f"[{name}] scan finished. next in {interval}s")
+        except Exception as e:
+            print(name, 'error:', repr(e))
         await asyncio.sleep(interval)
 async def main():
     load_dotenv(); await init_db(settings.db_path)
