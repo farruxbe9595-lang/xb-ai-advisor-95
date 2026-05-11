@@ -1,6 +1,10 @@
+import os
 import asyncio
 from dotenv import load_dotenv
 
+if os.path.exists("/app/storage/signals.db"):
+    os.remove("/app/storage/signals.db")
+    print("signals.db deleted")
 from app.config.settings import settings
 from app.db.database import init_db
 from app.db.repository import Repository
