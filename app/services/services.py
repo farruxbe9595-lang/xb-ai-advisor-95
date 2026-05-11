@@ -78,6 +78,12 @@ class SignalService:
                 e.away_team,
                 e.commence_time
             )
+        elif e.sport_key.startswith('soccer'):
+            x = await self.api_sports.enrich_soccer(
+                e.home_team,
+                e.away_team,
+                e.commence_time
+            )
         else:
             x = {'data_quality': 'odds_only'}
 
@@ -89,6 +95,7 @@ class SignalService:
             )
 
         return x
+        
 
     async def best_analysis_for_event(self, e):
         if settings.enable_synthetic_half_totals:
