@@ -34,6 +34,10 @@ class Settings(BaseSettings):
         'v1.tennis.api-sports.io',
         alias='API_SPORTS_TENNIS_HOST'
     )
+    api_sports_football_host: str = os.getenv(
+    "API_SPORTS_FOOTBALL_HOST",
+    "v3.football.api-sports.io"
+    )
 
     min_confidence: int = Field(82, alias='MIN_CONFIDENCE')
     min_value_edge: float = Field(5.0, alias='MIN_VALUE_EDGE')
