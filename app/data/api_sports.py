@@ -4,12 +4,18 @@ from datetime import datetime, timezone
 
 
 class ApiSportsClient:
-    def __init__(self, api_key: str):
+    def __init__(
+        self,
+        api_key,
+        basketball_host,
+        tennis_host,
+        football_host
+    ):
         self.api_key = api_key
-        self.basketball_host = os.getenv("API_SPORTS_BASKETBALL_HOST", "v1.basketball.api-sports.io")
-        self.tennis_host = os.getenv("API_SPORTS_TENNIS_HOST", "v1.tennis.api-sports.io")
-        self.football_host = os.getenv("API_SPORTS_FOOTBALL_HOST", "v3.football.api-sports.io")
-
+        self.basketball_host = basketball_host
+        self.tennis_host = tennis_host
+        self.football_host = football_host
+        
     def headers(self, host: str):
         return {
             "x-rapidapi-key": self.api_key,
