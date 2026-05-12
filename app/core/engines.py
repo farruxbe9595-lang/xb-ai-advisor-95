@@ -3,13 +3,25 @@ from app.utils.math_utils import decimal_to_implied_probability, clamp, market_l
 from app.models.domain import Analysis, Market, Outcome
 
 
+def _as_float(value, default=None):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
 class Anomaly:
     @staticmethod
     def score(current, previous, model):
         warnings = []
         score = 0
 
-        if previous and previous > 1:
+        current = _as_float(current)
+        previous = _as_float(previous)
+
+        if current and previous and previous > 1:
             ch = abs(current - previous) / previous * 100
 
             if ch >= 18:
@@ -26,6 +38,10 @@ class Anomaly:
             score += 20
             warnings.append('Model ehtimoli past.')
 
+        if model < 52:
+            score += 15
+            warnings.append('Model ustunligi juda kichik.')
+
         return int(clamp(score, 0, 100)), warnings
 
 
@@ -34,7 +50,12 @@ class BacktestEngine:
         self.repo = repo
 
     async def market_adjustment(self, sport, market):
-        for r in await self.repo.performance_by_market():
+        try:
+            rows = await self.repo.performance_by_market()
+        except Exception as exc:
+            return 0, f'Backtest o‘qishda xato: {repr(exc)}'
+
+        for r in rows:
             if r['sport_key'] == sport and r['market_key'] == market:
                 total = r['total'] or 0
                 won = r['won'] or 0
@@ -59,9 +80,18 @@ class RiskEngine:
         self.repo = repo
 
     async def suggest(self, conf, edge, anom):
+        bankroll = float(getattr(settings, 'bankroll', 1000.0) or 1000.0)
+        base_pct = float(
+            getattr(settings, 'base_stake_percent', None)
+            or getattr(settings, 'stake_percent', 1.0)
+            or 1.0
+        )
+        min_pct = float(getattr(settings, 'min_stake_percent', 0.2) or 0.2)
+        max_pct = float(getattr(settings, 'max_stake_percent', 2.0) or 2.0)
+
         pl = await self.repo.daily_pl()
         losses = await self.repo.consecutive_losses()
-        max_loss = settings.bankroll * settings.daily_loss_limit_percent / 100
+        max_loss = bankroll * float(settings.daily_loss_limit_percent) / 100
 
         if pl <= -max_loss:
             return 0, 0, f'Kunlik zarar limiti oshdi: {pl}'
@@ -69,16 +99,25 @@ class RiskEngine:
         if losses >= settings.max_consecutive_losses:
             return 0, 0, f'Ketma-ket {losses} zarar. Pauza.'
 
-        pct = settings.base_stake_percent
+        pct = base_pct
+
         if conf >= 88:
             pct += 0.25
+        elif conf < 78:
+            pct -= 0.20
+
         if edge >= 10:
             pct += 0.20
+        elif edge < 2:
+            pct -= 0.15
+
         if anom >= 25:
             pct -= 0.40
+        if anom >= 35:
+            pct -= 0.35
 
-        pct = clamp(pct, 0.2, settings.max_stake_percent)
-        return round(settings.bankroll * pct / 100, 2), round(pct, 2), 'Risk limiti normal.'
+        pct = clamp(pct, min_pct, max_pct)
+        return round(bankroll * pct / 100, 2), round(pct, 2), 'Risk limiti normal.'
 
 
 class Scorer:
@@ -90,55 +129,73 @@ class Scorer:
         implied = decimal_to_implied_probability(outcome.price)
         model = implied
         reasons = []
+        warnings = []
 
         if self.min <= outcome.price <= self.max:
             model += 4
             reasons.append('Koeffitsient konservativ diapazonda.')
+        else:
+            model -= 6
+            warnings.append('Koeffitsient tavsiya diapazonidan tashqarida.')
 
         data_quality = str(enrich.get('data_quality', 'odds_only'))
         if data_quality.startswith('api_sports_'):
             model += 4
             reasons.append('API-Sports mapping topildi.')
         else:
-            reasons.append('API-Sports mapping topilmadi.')
+            model -= 2
+            warnings.append(enrich.get('warning') or 'API-Sports mapping topilmadi.')
 
         if market.synthetic:
-            model -= 8
-            reasons.append('Synthetic market xavfli, ball pasaytirildi.')
+            model -= 10
+            warnings.append('Synthetic market xavfli, ball pasaytirildi.')
 
         if market.key == 'h2h':
-            model += 5 if event.sport_key.startswith('tennis') else 3
-
-        if market.key == 'totals':
-            if event.sport_key.startswith('basketball'):
-                model += 2
-                reasons.append('Basketbol total marketi ehtiyotkor baholandi.')
-            else:
+            if event.sport_key.startswith('tennis'):
+                model += 5
+            elif event.sport_key.startswith('basketball'):
                 model += 3
-
-        if market.key == 'first_half_totals':
-            model += 1
+            else:
+                model += 2
 
         if market.key == 'spreads':
             model += 2
             reasons.append('Spread market qo‘shimcha xavf bilan baholandi.')
 
-        if outcome.point is not None:
-            reasons.append(f'Line: {outcome.point:g}')
+        if market.key == 'totals':
+            if event.sport_key.startswith('basketball'):
+                model += 1
+                reasons.append('Basketbol total marketi ehtiyotkor baholandi.')
+            else:
+                model += 2
+
+        if market.key == 'first_half_totals':
+            model -= 2
+            warnings.append('1-yarm total faqat qo‘shimcha/synthetic taxmin sifatida baholandi.')
+
+        point = _as_float(outcome.point)
+        if point is not None:
+            reasons.append(f'Line: {point:g}')
 
             if market.key == 'totals' and event.sport_key.startswith('basketball'):
-                if outcome.name.lower() == 'under' and float(outcome.point) < 215:
+                pick = str(outcome.name).lower()
+                if 'under' in pick and point < 215:
                     model -= 6
-                    reasons.append('NBA Under line past: xavf oshirildi.')
+                    warnings.append('Basketbol Under line past: xavf oshirildi.')
+                if 'over' in pick and point > 245:
+                    model -= 5
+                    warnings.append('Basketbol Over line juda yuqori: xavf oshirildi.')
 
         if adj:
             model += adj
 
-        reasons.append(note)
+        if note:
+            reasons.append(note)
 
         model = clamp(model, 1, 90)
         edge = model - implied
-        anom, warn = Anomaly.score(outcome.price, previous, model)
+        anom, anom_warnings = Anomaly.score(outcome.price, previous, model)
+        warnings.extend(anom_warnings)
 
         conf = int(clamp(
             48 + (model - 50) * 1.05 + edge * 1.10 - anom * 0.35,
@@ -166,7 +223,7 @@ class Scorer:
             anom,
             risk,
             reasons,
-            warn,
+            warnings,
             market.bookmaker,
             data_quality,
             market.synthetic,
@@ -180,12 +237,13 @@ def add_synthetic_half(event):
     for m in event.markets:
         if m.key == 'totals':
             for o in m.outcomes:
-                if o.point is not None and o.name.lower() in {'over', 'under'}:
+                point = _as_float(o.point)
+                if point is not None and str(o.name).lower() in {'over', 'under'}:
                     event.markets.append(
                         Market(
                             'first_half_totals',
                             f'{m.bookmaker} / synthetic',
-                            [Outcome(o.name, o.price, round(float(o.point) * 0.505, 1))],
+                            [Outcome(o.name, o.price, round(point * 0.505, 1))],
                             m.last_update,
                             True,
                         )
@@ -231,7 +289,7 @@ def evaluate_signal(signal, payload):
         line = float(signal['line'])
         p = pick.lower()
 
-        if total == line:
+        if abs(total - line) < 0.0001:
             return 'void', f"Push/Void. Total: {total:g}. Line: {line:g}. Final: {hs}-{aw}."
 
         won = (total > line) if 'over' in p else (total < line)
@@ -261,7 +319,6 @@ def _evaluate_spread(signal, payload):
     pick_is_away = _same_side(pick, away)
 
     if not pick_is_home and not pick_is_away:
-        # Ayrim bookmakerlarda pick nomi qisqartirilgan bo'lishi mumkin.
         match_name = str(signal.get('match_name') or '')
         if ' vs ' in match_name:
             mh, ma = match_name.split(' vs ', 1)
@@ -275,7 +332,7 @@ def _evaluate_spread(signal, payload):
     opp_score = float(aw if pick_is_home else hs)
     adjusted = picked_score + line
 
-    if adjusted == opp_score:
+    if abs(adjusted - opp_score) < 0.0001:
         return 'void', f"Spread push. Adjusted: {adjusted:g}. Line: {line:g}. Final: {hs}-{aw}."
 
     won = adjusted > opp_score
@@ -293,7 +350,7 @@ def _same_side(a, b):
 
 
 def _clean_name(x):
-    return (
+    cleaned = (
         str(x)
         .lower()
         .replace('.', ' ')
@@ -302,3 +359,5 @@ def _clean_name(x):
         .replace('  ', ' ')
         .strip()
     )
+    drop = {'fc', 'cf', 'afc', 'bc', 'club'}
+    return ' '.join(w for w in cleaned.split() if w not in drop)
