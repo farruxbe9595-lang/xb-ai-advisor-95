@@ -1,6 +1,26 @@
 import json
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, timedelta
+
 import aiosqlite
+
+from app.config.settings import settings
+
+
+def _utc_now():
+    return datetime.now(timezone.utc)
+
+
+def _uz_now():
+    return _utc_now() + timedelta(hours=settings.timezone_offset_hours)
+
+
+def _parse_iso_dt(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+    except Exception:
+        return None
 
 
 class Repository:
@@ -8,14 +28,20 @@ class Repository:
         self.db_path = db_path
 
     async def save_odds_snapshot(self, event):
-        now = datetime.now(timezone.utc).isoformat()
+        now = _utc_now().isoformat()
         rows = []
 
         for m in event.markets:
             for o in m.outcomes:
                 rows.append((
-                    event.event_id, event.sport_key, m.key, m.bookmaker,
-                    o.name, o.point, o.price, now
+                    event.event_id,
+                    event.sport_key,
+                    m.key,
+                    m.bookmaker,
+                    o.name,
+                    o.point,
+                    o.price,
+                    now,
                 ))
 
         if rows:
@@ -27,7 +53,7 @@ class Repository:
                         outcome_name, line, odds, created_at
                     ) VALUES(?,?,?,?,?,?,?,?)
                     ''',
-                    rows
+                    rows,
                 )
                 await db.commit()
 
@@ -40,7 +66,7 @@ class Repository:
                     WHERE event_id=? AND market_key=? AND outcome_name=? AND line IS NULL
                     ORDER BY id DESC LIMIT 1
                     ''',
-                    (event_id, market_key, outcome_name)
+                    (event_id, market_key, outcome_name),
                 )
             else:
                 cur = await db.execute(
@@ -50,13 +76,16 @@ class Repository:
                     AND ABS(line - ?) < 0.001
                     ORDER BY id DESC LIMIT 1
                     ''',
-                    (event_id, market_key, outcome_name, line)
+                    (event_id, market_key, outcome_name, line),
                 )
 
             row = await cur.fetchone()
             return float(row[0]) if row else None
 
     async def save_event_link(self, odds_event_id, sport_key, api_sports_event_id):
+        if not api_sports_event_id:
+            return
+
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 '''
@@ -67,9 +96,11 @@ class Repository:
                 DO UPDATE SET api_sports_event_id=excluded.api_sports_event_id
                 ''',
                 (
-                    odds_event_id, sport_key, api_sports_event_id,
-                    datetime.now(timezone.utc).isoformat()
-                )
+                    odds_event_id,
+                    sport_key,
+                    str(api_sports_event_id),
+                    _utc_now().isoformat(),
+                ),
             )
             await db.commit()
 
@@ -82,7 +113,7 @@ class Repository:
                 WHERE odds_event_id=?
                 LIMIT 1
                 ''',
-                (odds_event_id,)
+                (odds_event_id,),
             )
             row = await cur.fetchone()
             return row[0] if row and row[0] else None
@@ -101,9 +132,13 @@ class Repository:
                 LIMIT 1
                 ''',
                 (
-                    a.event_id, a.market_key, a.pick,
-                    a.line, a.line, a.line or 0
-                )
+                    a.event_id,
+                    a.market_key,
+                    a.pick,
+                    a.line,
+                    a.line,
+                    a.line or 0,
+                ),
             )
             return await cur.fetchone() is not None
 
@@ -127,35 +162,50 @@ class Repository:
                 ''',
                 (
                     None,
-                    a.event_id, a.sport_key, a.sport_title, a.match_name,
-                    a.commence_time.isoformat(), a.market_key, a.market_label,
-                    a.pick, a.odds, a.line, a.implied_probability,
-                    a.model_probability, a.value_edge, a.confidence,
-                    a.anomaly_score, a.risk_level, a.bookmaker,
+                    a.event_id,
+                    a.sport_key,
+                    a.sport_title,
+                    a.match_name,
+                    a.commence_time.isoformat(),
+                    a.market_key,
+                    a.market_label,
+                    a.pick,
+                    a.odds,
+                    a.line,
+                    a.implied_probability,
+                    a.model_probability,
+                    a.value_edge,
+                    a.confidence,
+                    a.anomaly_score,
+                    a.risk_level,
+                    a.bookmaker,
                     json.dumps(a.reasons, ensure_ascii=False),
                     json.dumps(a.warnings, ensure_ascii=False),
-                    a.data_quality, 1 if a.synthetic else 0,
-                    a.ai_validator_score, a.ai_validator_verdict,
-                    a.stake_amount, a.stake_percent,
-                    "pending", datetime.now(timezone.utc).isoformat()
-                )
+                    a.data_quality,
+                    1 if a.synthetic else 0,
+                    a.ai_validator_score,
+                    a.ai_validator_verdict,
+                    a.stake_amount,
+                    a.stake_percent,
+                    'pending',
+                    _utc_now().isoformat(),
+                ),
             )
 
             signal_id = cur.lastrowid
-
             prefix = (
                 a.sport_key.upper()
-                .replace("BASKETBALL_", "")
-                .replace("TENNIS_", "")
+                .replace('BASKETBALL_', '')
+                .replace('TENNIS_', '')
+                .replace('SOCCER_', '')
             )
-            date_code = datetime.now(timezone.utc).strftime("%Y%m%d")
-            signal_code = f"{prefix}-{date_code}-{signal_id:04d}"
+            date_code = _uz_now().strftime('%Y%m%d')
+            signal_code = f'{prefix}-{date_code}-{signal_id:04d}'
 
             await db.execute(
-                "UPDATE signals SET signal_code=? WHERE id=?",
-                (signal_code, signal_id)
+                'UPDATE signals SET signal_code=? WHERE id=?',
+                (signal_code, signal_id),
             )
-
             await db.commit()
 
             a.signal_code = signal_code
@@ -182,7 +232,7 @@ class Repository:
                 SET status=?, result_text=?
                 WHERE id=?
                 ''',
-                (status, result_text, signal_id)
+                (status, result_text, signal_id),
             )
             await db.commit()
 
@@ -219,25 +269,35 @@ class Repository:
             return [dict(r) for r in await cur.fetchall()]
 
     async def daily_pl(self):
+        today_uz = _uz_now().date()
+        cutoff_utc = _utc_now() - timedelta(hours=36)
+
         async with aiosqlite.connect(self.db_path) as db:
             cur = await db.execute(
                 '''
-                SELECT status, stake_amount, odds
+                SELECT status, stake_amount, odds, created_at
                 FROM signals
-                WHERE DATE(created_at)=?
+                WHERE created_at >= ?
                 ''',
-                (date.today().isoformat(),)
+                (cutoff_utc.isoformat(),),
             )
             rows = await cur.fetchall()
 
         pl = 0.0
-        for s, stake, odds in rows:
+        for status, stake, odds, created_at in rows:
+            created_dt = _parse_iso_dt(created_at)
+            if created_dt is None:
+                continue
+            created_uz_date = (created_dt + timedelta(hours=settings.timezone_offset_hours)).date()
+            if created_uz_date != today_uz:
+                continue
+
             stake = float(stake or 0)
             odds = float(odds or 0)
 
-            if s == "won":
+            if status == 'won':
                 pl += stake * (odds - 1)
-            elif s == "lost":
+            elif status == 'lost':
                 pl -= stake
 
         return round(pl, 2)
@@ -255,8 +315,8 @@ class Repository:
             rows = await cur.fetchall()
 
         n = 0
-        for (s,) in rows:
-            if s == "lost":
+        for (status,) in rows:
+            if status == 'lost':
                 n += 1
             else:
                 break
@@ -271,7 +331,7 @@ class Repository:
                 WHERE report_date=?
                 LIMIT 1
                 ''',
-                (report_date,)
+                (report_date,),
             )
             return await cur.fetchone() is not None
 
@@ -282,6 +342,6 @@ class Repository:
                 INSERT OR IGNORE INTO daily_reports(report_date, sent_at)
                 VALUES(?,?)
                 ''',
-                (report_date, datetime.now(timezone.utc).isoformat())
+                (report_date, _utc_now().isoformat()),
             )
             await db.commit()
