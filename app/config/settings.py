@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     result_interval_seconds: int = Field(900, alias='RESULT_INTERVAL_SECONDS')
     daily_report_hour: int = Field(9, alias='DAILY_REPORT_HOUR')
 
+    # Uzbekistan = UTC+5. Kunlik P/L, report va signal ID shu vaqtga mos hisoblanadi.
+    timezone_offset_hours: int = Field(5, alias='TIMEZONE_OFFSET_HOURS')
+
     odds_regions: str = Field('eu', alias='ODDS_REGIONS')
     odds_markets: str = Field('h2h,totals,spreads', alias='ODDS_MARKETS')
     sport_keys: str = Field(
@@ -35,8 +38,8 @@ class Settings(BaseSettings):
         alias='API_SPORTS_TENNIS_HOST'
     )
     api_sports_football_host: str = Field(
-    'v3.football.api-sports.io',
-    alias='API_SPORTS_FOOTBALL_HOST'
+        'v3.football.api-sports.io',
+        alias='API_SPORTS_FOOTBALL_HOST'
     )
 
     min_confidence: int = Field(82, alias='MIN_CONFIDENCE')
@@ -59,7 +62,10 @@ class Settings(BaseSettings):
 
     enable_winner_market: bool = Field(True, alias='ENABLE_WINNER_MARKET')
     enable_totals_market: bool = Field(True, alias='ENABLE_TOTALS_MARKET')
-    enable_spreads_market: bool = Field(True, alias='ENABLE_SPREADS_MARKET')
+
+    # Spread natijasini tekshirish qo'shildi, lekin xavfni kamaytirish uchun default False.
+    # Agar .env ichida ENABLE_SPREADS_MARKET=true bo'lsa, yoqiladi.
+    enable_spreads_market: bool = Field(False, alias='ENABLE_SPREADS_MARKET')
 
     enable_synthetic_half_totals: bool = Field(False, alias='ENABLE_SYNTHETIC_HALF_TOTALS')
     enable_live_engine: bool = Field(False, alias='ENABLE_LIVE_ENGINE')
