@@ -1,5 +1,4 @@
 import json
-import os
 from datetime import datetime, timezone, timedelta
 
 import aiosqlite
@@ -27,9 +26,6 @@ def _parse_iso_dt(value):
 class Repository:
     def __init__(self, db_path):
         self.db_path = db_path
-        folder = os.path.dirname(db_path)
-        if folder:
-            os.makedirs(folder, exist_ok=True)
 
     async def save_odds_snapshot(self, event):
         now = _utc_now().isoformat()
@@ -146,32 +142,6 @@ class Repository:
             )
             return await cur.fetchone() is not None
 
-    async def daily_signal_count(self):
-        today_uz = _uz_now().date()
-        cutoff_utc = _utc_now() - timedelta(hours=36)
-
-        async with aiosqlite.connect(self.db_path) as db:
-            cur = await db.execute(
-                '''
-                SELECT created_at
-                FROM signals
-                WHERE created_at >= ?
-                ''',
-                (cutoff_utc.isoformat(),),
-            )
-            rows = await cur.fetchall()
-
-        total = 0
-        for (created_at,) in rows:
-            created_dt = _parse_iso_dt(created_at)
-            if created_dt is None:
-                continue
-            created_uz_date = (created_dt + timedelta(hours=settings.timezone_offset_hours)).date()
-            if created_uz_date == today_uz:
-                total += 1
-
-        return total
-
     async def save_signal(self, a):
         if await self.signal_exists(a):
             return False
@@ -241,7 +211,7 @@ class Repository:
             a.signal_code = signal_code
             return True
 
-    async def pending_signals(self, limit=100):
+    async def pending_signals(self):
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
@@ -249,9 +219,8 @@ class Repository:
                 SELECT * FROM signals
                 WHERE status='pending'
                 ORDER BY id ASC
-                LIMIT ?
-                ''',
-                (limit,),
+                LIMIT 100
+                '''
             )
             return [dict(r) for r in await cur.fetchall()]
 
@@ -353,6 +322,33 @@ class Repository:
                 break
 
         return n
+
+    async def daily_signal_count(self):
+        """Bugungi UZT bo‘yicha yaratilgan signal soni. Express kupon leglari ham signal sifatida sanaladi."""
+        today_uz = _uz_now().date()
+        cutoff_utc = _utc_now() - timedelta(hours=36)
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                """
+                SELECT created_at
+                FROM signals
+                WHERE created_at >= ?
+                """,
+                (cutoff_utc.isoformat(),),
+            )
+            rows = await cur.fetchall()
+
+        count = 0
+        for (created_at,) in rows:
+            created_dt = _parse_iso_dt(created_at)
+            if created_dt is None:
+                continue
+            created_uz_date = (created_dt + timedelta(hours=settings.timezone_offset_hours)).date()
+            if created_uz_date == today_uz:
+                count += 1
+
+        return count
 
     async def daily_report_sent(self, report_date):
         async with aiosqlite.connect(self.db_path) as db:
