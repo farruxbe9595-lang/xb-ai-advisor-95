@@ -95,7 +95,8 @@ class Scorer:
             model += 4
             reasons.append('Koeffitsient konservativ diapazonda.')
 
-        if enrich.get('data_quality') == 'odds_plus_api_sports':
+        data_quality = str(enrich.get('data_quality', 'odds_only'))
+        if data_quality.startswith('api_sports_'):
             model += 4
             reasons.append('API-Sports mapping topildi.')
         else:
@@ -119,7 +120,8 @@ class Scorer:
             model += 1
 
         if market.key == 'spreads':
-            model += 3
+            model += 2
+            reasons.append('Spread market qo‘shimcha xavf bilan baholandi.')
 
         if outcome.point is not None:
             reasons.append(f'Line: {outcome.point:g}')
@@ -141,7 +143,7 @@ class Scorer:
         conf = int(clamp(
             48 + (model - 50) * 1.05 + edge * 1.10 - anom * 0.35,
             1,
-            92
+            92,
         ))
 
         risk = 'Past/o‘rtacha' if conf >= 84 and anom < 30 else 'O‘rtacha' if conf >= 78 else 'Yuqori'
@@ -166,8 +168,8 @@ class Scorer:
             reasons,
             warn,
             market.bookmaker,
-            enrich.get('data_quality', 'odds_only'),
-            market.synthetic
+            data_quality,
+            market.synthetic,
         )
 
 
@@ -185,7 +187,7 @@ def add_synthetic_half(event):
                             f'{m.bookmaker} / synthetic',
                             [Outcome(o.name, o.price, round(float(o.point) * 0.505, 1))],
                             m.last_update,
-                            True
+                            True,
                         )
                     )
                     return
@@ -195,6 +197,12 @@ def evaluate_signal(signal, payload):
     if not payload:
         return 'pending', 'Natija hali topilmadi.'
 
+    if payload.get('error'):
+        return 'pending', f"Natija API xatosi: {payload.get('error')}"
+
+    if payload.get('finished') is False:
+        return 'pending', f"O‘yin hali tugamagan yoki natija tasdiqlanmagan. Status: {payload.get('status', 'unknown')}"
+
     market = signal['market_key']
     pick = str(signal['pick'])
     hs = payload.get('home_score')
@@ -202,10 +210,10 @@ def evaluate_signal(signal, payload):
 
     if market == 'h2h':
         winner = payload.get('winner')
-        status = 'won' if winner and (
-            pick.lower() in str(winner).lower()
-            or str(winner).lower() in pick.lower()
-        ) else 'lost'
+        if not winner:
+            return 'pending', f"Winner aniqlanmadi. Final: {hs}-{aw}."
+
+        status = 'won' if _same_side(pick, winner) else 'lost'
         return status, f"Winner: {winner}. Final: {hs}-{aw}."
 
     if market in {'totals', 'first_half_totals'}:
@@ -216,14 +224,81 @@ def evaluate_signal(signal, payload):
         if hs is None or aw is None:
             return 'pending', 'Score yetishmayapti.'
 
-        total = int(hs) + int(aw)
+        if signal.get('line') is None:
+            return 'pending', 'Line topilmadi.'
+
+        total = float(hs) + float(aw)
         line = float(signal['line'])
         p = pick.lower()
 
+        if total == line:
+            return 'void', f"Push/Void. Total: {total:g}. Line: {line:g}. Final: {hs}-{aw}."
+
         won = (total > line) if 'over' in p else (total < line)
-        return ('won' if won else 'lost'), f"Total: {total}. Line: {line}. Final: {hs}-{aw}."
+        return ('won' if won else 'lost'), f"Total: {total:g}. Line: {line:g}. Final: {hs}-{aw}."
 
     if market == 'spreads':
-        return 'void', f"Spread natija qo‘lda tekshiriladi. Final: {hs}-{aw}."
+        return _evaluate_spread(signal, payload)
 
     return 'pending', 'Market noma’lum.'
+
+
+def _evaluate_spread(signal, payload):
+    if signal.get('line') is None:
+        return 'pending', 'Spread line topilmadi.'
+
+    hs = payload.get('home_score')
+    aw = payload.get('away_score')
+    if hs is None or aw is None:
+        return 'pending', 'Spread uchun final score yetishmayapti.'
+
+    pick = str(signal['pick'])
+    line = float(signal['line'])
+    home = str(payload.get('home_team') or '')
+    away = str(payload.get('away_team') or '')
+
+    pick_is_home = _same_side(pick, home)
+    pick_is_away = _same_side(pick, away)
+
+    if not pick_is_home and not pick_is_away:
+        # Ayrim bookmakerlarda pick nomi qisqartirilgan bo'lishi mumkin.
+        match_name = str(signal.get('match_name') or '')
+        if ' vs ' in match_name:
+            mh, ma = match_name.split(' vs ', 1)
+            pick_is_home = _same_side(pick, mh)
+            pick_is_away = _same_side(pick, ma)
+
+    if not pick_is_home and not pick_is_away:
+        return 'void', f"Spread pick jamoa bilan moslanmadi. Pick: {pick}. Final: {hs}-{aw}."
+
+    picked_score = float(hs if pick_is_home else aw)
+    opp_score = float(aw if pick_is_home else hs)
+    adjusted = picked_score + line
+
+    if adjusted == opp_score:
+        return 'void', f"Spread push. Adjusted: {adjusted:g}. Line: {line:g}. Final: {hs}-{aw}."
+
+    won = adjusted > opp_score
+    return ('won' if won else 'lost'), f"Spread adjusted: {adjusted:g} vs {opp_score:g}. Line: {line:g}. Final: {hs}-{aw}."
+
+
+def _same_side(a, b):
+    a = _clean_name(a)
+    b = _clean_name(b)
+
+    if not a or not b:
+        return False
+
+    return a == b or a in b or b in a or len(set(a.split()).intersection(set(b.split()))) >= 2
+
+
+def _clean_name(x):
+    return (
+        str(x)
+        .lower()
+        .replace('.', ' ')
+        .replace('-', ' ')
+        .replace('_', ' ')
+        .replace('  ', ' ')
+        .strip()
+    )
