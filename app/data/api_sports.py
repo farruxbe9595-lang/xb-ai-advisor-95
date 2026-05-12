@@ -27,21 +27,15 @@ class ApiSportsClient:
         url = f"https://{host}{path}"
 
         async with httpx.AsyncClient(timeout=35) as client:
-            response = await client.get(
-                url,
-                headers=self.headers(host),
-                params=params,
-            )
+            response = await client.get(url, headers=self.headers(host), params=params)
 
             if response.status_code >= 400:
-                raise RuntimeError(
-                    f"API-Sports HTTP {response.status_code}: {response.text[:300]}"
-                )
+                raise RuntimeError(f"API-Sports HTTP {response.status_code}: {response.text[:300]}")
 
             return response.json()
 
     def _clean_name(self, name: str):
-        cleaned = (
+        return (
             str(name)
             .lower()
             .replace("fc", "")
@@ -53,7 +47,6 @@ class ApiSportsClient:
             .replace("_", " ")
             .strip()
         )
-        return " ".join(cleaned.split())
 
     def _match_names(self, a: str, b: str):
         if not a or not b:
@@ -64,23 +57,17 @@ class ApiSportsClient:
 
         if a == b:
             return True
-
         if a in b or b in a:
             return True
 
         a_parts = set(a.split())
         b_parts = set(b.split())
         common = a_parts.intersection(b_parts)
-
         return len(common) >= 2
 
     async def enrich_basketball(self, home_team, away_team, commence_time):
         try:
-            data = await self._get(
-                self.basketball_host,
-                "/games",
-                {"date": commence_time.date().isoformat()},
-            )
+            data = await self._get(self.basketball_host, "/games", {"date": commence_time.date().isoformat()})
 
             for game in data.get("response", []):
                 h = game.get("teams", {}).get("home", {}).get("name", "")
@@ -97,24 +84,14 @@ class ApiSportsClient:
                         "status": game.get("status", {}).get("long"),
                     }
 
-            return {
-                "data_quality": "odds_only",
-                "warning": "API-Sports basketball mapping topilmadi",
-            }
+            return {"data_quality": "odds_only", "warning": "API-Sports basketball mapping topilmadi"}
 
         except Exception as e:
-            return {
-                "data_quality": "odds_only",
-                "warning": f"Basketball enrich error: {repr(e)}",
-            }
+            return {"data_quality": "odds_only", "warning": f"Basketball enrich error: {repr(e)}"}
 
     async def enrich_tennis(self, home_team, away_team, commence_time):
         try:
-            data = await self._get(
-                self.tennis_host,
-                "/fixtures",
-                {"date": commence_time.date().isoformat()},
-            )
+            data = await self._get(self.tennis_host, "/fixtures", {"date": commence_time.date().isoformat()})
 
             for game in data.get("response", []):
                 players = game.get("players", {})
@@ -134,24 +111,14 @@ class ApiSportsClient:
                         "status": game.get("status", {}).get("long"),
                     }
 
-            return {
-                "data_quality": "odds_only",
-                "warning": "API-Sports tennis mapping topilmadi",
-            }
+            return {"data_quality": "odds_only", "warning": "API-Sports tennis mapping topilmadi"}
 
         except Exception as e:
-            return {
-                "data_quality": "odds_only",
-                "warning": f"Tennis enrich error: {repr(e)}",
-            }
+            return {"data_quality": "odds_only", "warning": f"Tennis enrich error: {repr(e)}"}
 
     async def enrich_soccer(self, home_team, away_team, commence_time):
         try:
-            data = await self._get(
-                self.football_host,
-                "/fixtures",
-                {"date": commence_time.date().isoformat()},
-            )
+            data = await self._get(self.football_host, "/fixtures", {"date": commence_time.date().isoformat()})
 
             for game in data.get("response", []):
                 teams = game.get("teams", {})
@@ -175,196 +142,162 @@ class ApiSportsClient:
                         "venue": fixture.get("venue", {}).get("name"),
                     }
 
-            return {
-                "data_quality": "odds_only",
-                "warning": "API-Sports football mapping topilmadi",
-            }
+            return {"data_quality": "odds_only", "warning": "API-Sports football mapping topilmadi"}
 
         except Exception as e:
-            return {
-                "data_quality": "odds_only",
-                "warning": f"Football enrich error: {repr(e)}",
-            }
+            return {"data_quality": "odds_only", "warning": f"Football enrich error: {repr(e)}"}
 
     async def basketball_result(self, api_id):
         try:
-            raw = await self._get(self.basketball_host, "/games", {"id": api_id})
-            return self._normalize_basketball(raw)
+            data = await self._get(self.basketball_host, "/games", {"id": api_id})
+            return self._normalize_basketball_result(data)
         except Exception as e:
             return {"error": repr(e)}
 
     async def tennis_result(self, api_id):
         try:
-            raw = await self._get(self.tennis_host, "/fixtures", {"id": api_id})
-            return self._normalize_tennis(raw)
+            data = await self._get(self.tennis_host, "/fixtures", {"id": api_id})
+            return self._normalize_tennis_result(data)
         except Exception as e:
             return {"error": repr(e)}
 
     async def soccer_result(self, api_id):
         try:
-            raw = await self._get(self.football_host, "/fixtures", {"id": api_id})
-            return self._normalize_soccer(raw)
+            data = await self._get(self.football_host, "/fixtures", {"id": api_id})
+            return self._normalize_soccer_result(data)
         except Exception as e:
             return {"error": repr(e)}
 
-    def _first_response(self, raw):
-        response = raw.get("response") if isinstance(raw, dict) else None
-        if isinstance(response, list) and response:
-            return response[0]
-        if isinstance(response, dict):
-            return response
-        return None
-
-    def _num(self, value):
-        try:
-            if value is None or value == "":
-                return None
-            return int(float(value))
-        except Exception:
-            return None
-
-    def _score_from_obj(self, obj):
-        if obj is None:
-            return None
-        if isinstance(obj, (int, float, str)):
-            return self._num(obj)
-        if isinstance(obj, dict):
-            for key in ("total", "points", "score", "current", "final"):
-                n = self._num(obj.get(key))
-                if n is not None:
-                    return n
-        return None
-
-    def _basketball_half_score(self, team_scores):
-        if not isinstance(team_scores, dict):
-            return None
-
-        q1 = self._num(team_scores.get("quarter_1") or team_scores.get("q1"))
-        q2 = self._num(team_scores.get("quarter_2") or team_scores.get("q2"))
-
-        if q1 is not None and q2 is not None:
-            return q1 + q2
-
-        p1 = self._num(team_scores.get("period_1"))
-        p2 = self._num(team_scores.get("period_2"))
-        if p1 is not None and p2 is not None:
-            return p1 + p2
-
-        return None
-
-    def _is_finished(self, status):
-        short = str(status.get("short", "") if isinstance(status, dict) else "").upper()
-        long = str(status.get("long", status) if status else "").lower()
-
-        finish_shorts = {"FT", "AOT", "AP", "FIN", "FINISHED", "ENDED"}
-        finish_words = ("finished", "after over time", "full time", "ended", "completed")
-
-        return short in finish_shorts or any(w in long for w in finish_words)
-
-    def _normalize_basketball(self, raw):
-        game = self._first_response(raw)
-        if not game:
+    def _normalize_basketball_result(self, data):
+        response = data.get("response") or []
+        if not response:
             return {"finished": False, "status": "not_found"}
 
-        status_obj = game.get("status", {})
-        finished = self._is_finished(status_obj)
+        game = response[0]
+        status_obj = game.get("status") or {}
+        status_long = str(status_obj.get("long") or status_obj.get("short") or "").lower()
+        status_short = str(status_obj.get("short") or "").lower()
+        finished = any(x in status_long for x in ["finished", "after over", "ended"]) or status_short in {"ft", "aot", "ap"}
 
-        teams = game.get("teams", {})
-        home = teams.get("home", {}).get("name", "")
-        away = teams.get("away", {}).get("name", "")
-
-        scores = game.get("scores", {})
-        home_scores = scores.get("home", {})
-        away_scores = scores.get("away", {})
-
-        hs = self._score_from_obj(home_scores)
-        aw = self._score_from_obj(away_scores)
-
-        if hs is None:
-            hs = self._num(scores.get("home"))
-        if aw is None:
-            aw = self._num(scores.get("away"))
+        teams = game.get("teams") or {}
+        scores = game.get("scores") or {}
+        home_team = (teams.get("home") or {}).get("name")
+        away_team = (teams.get("away") or {}).get("name")
+        home_score = self._extract_score(scores.get("home"))
+        away_score = self._extract_score(scores.get("away"))
 
         winner = None
-        if finished and hs is not None and aw is not None and hs != aw:
-            winner = home if hs > aw else away
+        if finished and home_score is not None and away_score is not None:
+            if home_score > away_score:
+                winner = home_team
+            elif away_score > home_score:
+                winner = away_team
+
+        first_half_home, first_half_away = self._extract_basketball_half(scores)
 
         return {
             "finished": finished,
-            "status": status_obj.get("long") if isinstance(status_obj, dict) else str(status_obj),
-            "home_team": home,
-            "away_team": away,
-            "home_score": hs,
-            "away_score": aw,
-            "first_half_home": self._basketball_half_score(home_scores),
-            "first_half_away": self._basketball_half_score(away_scores),
+            "status": status_obj.get("long") or status_obj.get("short"),
+            "home_team": home_team,
+            "away_team": away_team,
+            "home_score": home_score,
+            "away_score": away_score,
+            "first_half_home": first_half_home,
+            "first_half_away": first_half_away,
             "winner": winner,
         }
 
-    def _normalize_tennis(self, raw):
-        game = self._first_response(raw)
-        if not game:
+    def _normalize_soccer_result(self, data):
+        response = data.get("response") or []
+        if not response:
             return {"finished": False, "status": "not_found"}
 
-        status_obj = game.get("status", {})
-        finished = self._is_finished(status_obj)
+        game = response[0]
+        fixture = game.get("fixture") or {}
+        status_obj = fixture.get("status") or {}
+        status_short = str(status_obj.get("short") or "").upper()
+        finished = status_short in {"FT", "AET", "PEN"}
 
-        players = game.get("players", {})
-        p1_obj = players.get("first", {})
-        p2_obj = players.get("second", {})
-        p1 = p1_obj.get("name", "")
-        p2 = p2_obj.get("name", "")
+        teams = game.get("teams") or {}
+        goals = game.get("goals") or {}
+        home_team = (teams.get("home") or {}).get("name")
+        away_team = (teams.get("away") or {}).get("name")
+        home_score = goals.get("home")
+        away_score = goals.get("away")
 
         winner = None
-
-        if p1_obj.get("winner") is True:
-            winner = p1
-        elif p2_obj.get("winner") is True:
-            winner = p2
-        elif isinstance(game.get("winner"), dict):
-            winner = game["winner"].get("name")
-
-        scores = game.get("scores", {})
-        hs = self._score_from_obj(scores.get("home") or scores.get("first"))
-        aw = self._score_from_obj(scores.get("away") or scores.get("second"))
+        if finished and home_score is not None and away_score is not None:
+            if home_score > away_score:
+                winner = home_team
+            elif away_score > home_score:
+                winner = away_team
+            else:
+                winner = "Draw"
 
         return {
             "finished": finished,
-            "status": status_obj.get("long") if isinstance(status_obj, dict) else str(status_obj),
+            "status": status_obj.get("long") or status_short,
+            "home_team": home_team,
+            "away_team": away_team,
+            "home_score": home_score,
+            "away_score": away_score,
+            "winner": winner,
+        }
+
+    def _normalize_tennis_result(self, data):
+        response = data.get("response") or []
+        if not response:
+            return {"finished": False, "status": "not_found"}
+
+        game = response[0]
+        status_obj = game.get("status") or {}
+        status_long = str(status_obj.get("long") or status_obj.get("short") or "").lower()
+        finished = any(x in status_long for x in ["finished", "ended", "retired", "walkover"])
+
+        players = game.get("players") or {}
+        p1 = (players.get("first") or {}).get("name")
+        p2 = (players.get("second") or {}).get("name")
+        winner = None
+
+        winner_obj = game.get("winner") or {}
+        if isinstance(winner_obj, dict):
+            winner = winner_obj.get("name")
+
+        return {
+            "finished": finished,
+            "status": status_obj.get("long") or status_obj.get("short"),
             "home_team": p1,
             "away_team": p2,
-            "home_score": hs,
-            "away_score": aw,
+            "home_score": None,
+            "away_score": None,
             "winner": winner,
         }
 
-    def _normalize_soccer(self, raw):
-        game = self._first_response(raw)
-        if not game:
-            return {"finished": False, "status": "not_found"}
+    def _extract_score(self, side_score):
+        if side_score is None:
+            return None
+        if isinstance(side_score, (int, float)):
+            return int(side_score)
+        if isinstance(side_score, dict):
+            for key in ["total", "points", "score", "final"]:
+                val = side_score.get(key)
+                if val is not None:
+                    try:
+                        return int(val)
+                    except Exception:
+                        pass
+        return None
 
-        fixture = game.get("fixture", {})
-        status_obj = fixture.get("status", {})
-        finished = self._is_finished(status_obj)
-
-        teams = game.get("teams", {})
-        home = teams.get("home", {}).get("name", "")
-        away = teams.get("away", {}).get("name", "")
-
-        goals = game.get("goals", {})
-        hs = self._num(goals.get("home"))
-        aw = self._num(goals.get("away"))
-
-        winner = None
-        if finished and hs is not None and aw is not None and hs != aw:
-            winner = home if hs > aw else away
-
-        return {
-            "finished": finished,
-            "status": status_obj.get("long") if isinstance(status_obj, dict) else str(status_obj),
-            "home_team": home,
-            "away_team": away,
-            "home_score": hs,
-            "away_score": aw,
-            "winner": winner,
-        }
+    def _extract_basketball_half(self, scores):
+        try:
+            home = scores.get("home") or {}
+            away = scores.get("away") or {}
+            h1 = home.get("quarter_1") or home.get("q1") or 0
+            h2 = home.get("quarter_2") or home.get("q2") or 0
+            a1 = away.get("quarter_1") or away.get("q1") or 0
+            a2 = away.get("quarter_2") or away.get("q2") or 0
+            if h1 is None or h2 is None or a1 is None or a2 is None:
+                return None, None
+            return int(h1) + int(h2), int(a1) + int(a2)
+        except Exception:
+            return None, None
