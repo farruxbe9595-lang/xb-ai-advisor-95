@@ -24,6 +24,12 @@ class TelegramNotifier:
             if a.warnings
             else '✅ Katta shubhali anomaliya topilmadi'
         )
+        reasons = (
+            '\n'.join('• ' + esc(r) for r in a.reasons[:6])
+            if a.reasons
+            else '• Sabablar topilmadi'
+        )
+
         signal_code = getattr(a, 'signal_code', '') or 'NEW'
         uz_time = a.commence_time + timedelta(hours=settings.timezone_offset_hours)
 
@@ -34,7 +40,6 @@ class TelegramNotifier:
         text = f"""🎯 <b>AI SPORTS ADVISOR SIGNAL</b>
 
 🆔 <b>Signal ID:</b> {esc(signal_code)}
-
 🏟 <b>Sport:</b> {esc(a.sport_title)}
 🆚 <b>Match:</b> {esc(a.match_name)}
 ⏰ <b>Start (UZT):</b> {esc(uz_time.strftime('%Y-%m-%d %H:%M'))}
@@ -43,19 +48,23 @@ class TelegramNotifier:
 ✅ <b>Pick:</b> {esc(a.pick)}{line}
 💰 <b>Odds:</b> {a.odds:.2f}
 
-🤖 <b>AI ehtimoli:</b> {a.model_probability:.1f}%
-📊 <b>Implied probability:</b> {a.implied_probability:.1f}%
-📈 <b>Value edge:</b> {a.value_edge:.1f}%
 🔐 <b>Confidence:</b> {a.confidence}%
+📈 <b>Value edge:</b> {a.value_edge:.1f}%
+🤖 <b>Model probability:</b> {a.model_probability:.1f}%
+📊 <b>Implied probability:</b> {a.implied_probability:.1f}%
 🧠 <b>AI validator:</b> {ai_validator_text}
 🚨 <b>Anomaly:</b> {a.anomaly_score}/100
+⚖️ <b>Risk:</b> {esc(a.risk_level)}
 🧪 <b>Data:</b> {esc(a.data_quality)}
 💵 <b>Stake suggestion:</b> {a.stake_amount:.2f} ({a.stake_percent:.2f}% bankroll)
+
+<b>Asosiy sabablar:</b>
+{reasons}
 
 <b>AI izohi:</b>
 {esc(explanation)}
 
-<b>Risk filtri:</b>
+<b>Ogohlantirishlar:</b>
 {warnings}
 
 <i>Avtomatik pul tikish emas. Yakuniy qaror operatorniki.</i>"""
