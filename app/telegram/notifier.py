@@ -1,6 +1,10 @@
-from telegram import Bot
-from app.utils.html import esc
 from datetime import timedelta
+
+from telegram import Bot
+
+from app.config.settings import settings
+from app.utils.html import esc
+
 
 class TelegramNotifier:
     def __init__(self, token, group_id):
@@ -10,13 +14,23 @@ class TelegramNotifier:
 
     async def send_signal(self, a, explanation):
         if not self.enabled or self.bot is None:
-            print("SIGNAL", a)
+            print('SIGNAL', a)
+            print(explanation)
             return
 
-        line = f"\n📏 <b>Line:</b> {esc(a.line)}" if a.line is not None else ""
-        warnings = "\n".join("⚠️ " + esc(w) for w in a.warnings) if a.warnings else "✅ Katta shubhali anomaliya topilmadi"
-        signal_code = getattr(a, "signal_code", "") or "NEW"
-        uz_time = a.commence_time + timedelta(hours=5)
+        line = f"\n📏 <b>Line:</b> {esc(a.line)}" if a.line is not None else ''
+        warnings = (
+            '\n'.join('⚠️ ' + esc(w) for w in a.warnings)
+            if a.warnings
+            else '✅ Katta shubhali anomaliya topilmadi'
+        )
+        signal_code = getattr(a, 'signal_code', '') or 'NEW'
+        uz_time = a.commence_time + timedelta(hours=settings.timezone_offset_hours)
+
+        ai_validator_text = f'{a.ai_validator_score}/100 — {esc(a.ai_validator_verdict)}'
+        if str(a.ai_validator_verdict).upper() in {'DISABLED', 'OFF'}:
+            ai_validator_text = 'O‘chirilgan'
+
         text = f"""🎯 <b>AI SPORTS ADVISOR SIGNAL</b>
 
 🆔 <b>Signal ID:</b> {esc(signal_code)}
@@ -33,7 +47,7 @@ class TelegramNotifier:
 📊 <b>Implied probability:</b> {a.implied_probability:.1f}%
 📈 <b>Value edge:</b> {a.value_edge:.1f}%
 🔐 <b>Confidence:</b> {a.confidence}%
-🧠 <b>AI validator:</b> {a.ai_validator_score}/100 — {esc(a.ai_validator_verdict)}
+🧠 <b>AI validator:</b> {ai_validator_text}
 🚨 <b>Anomaly:</b> {a.anomaly_score}/100
 🧪 <b>Data:</b> {esc(a.data_quality)}
 💵 <b>Stake suggestion:</b> {a.stake_amount:.2f} ({a.stake_percent:.2f}% bankroll)
@@ -49,7 +63,8 @@ class TelegramNotifier:
         await self.bot.send_message(
             chat_id=self.group_id,
             text=text,
-            parse_mode="HTML"
+            parse_mode='HTML',
+            disable_web_page_preview=True,
         )
 
     async def send_result(self, text):
@@ -60,7 +75,8 @@ class TelegramNotifier:
         await self.bot.send_message(
             chat_id=self.group_id,
             text=esc(text),
-            parse_mode="HTML"
+            parse_mode='HTML',
+            disable_web_page_preview=True,
         )
 
     async def send_plain(self, text):
