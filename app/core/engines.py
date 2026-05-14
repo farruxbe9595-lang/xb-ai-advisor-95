@@ -12,6 +12,10 @@ def _as_float(value, default=None):
         return default
 
 
+def _is_safe_mode():
+    return bool(getattr(settings, 'safe_mode', False))
+
+
 class Anomaly:
     @staticmethod
     def score(current, previous, model):
@@ -101,20 +105,20 @@ class RiskEngine:
 
         pct = base_pct
 
-        if conf >= 88:
-            pct += 0.25
-        elif conf < 78:
+        if conf >= 84:
+            pct += 0.10
+        elif conf < 76:
+            pct -= 0.30
+
+        if edge >= 8:
+            pct += 0.10
+        elif edge < 0:
             pct -= 0.20
 
-        if edge >= 10:
-            pct += 0.20
-        elif edge < 2:
-            pct -= 0.15
-
-        if anom >= 25:
-            pct -= 0.40
-        if anom >= 35:
+        if anom >= 12:
             pct -= 0.35
+        if anom >= 25:
+            pct -= 0.50
 
         pct = clamp(pct, min_pct, max_pct)
         return round(bankroll * pct / 100, 2), round(pct, 2), 'Risk limiti normal.'
@@ -130,60 +134,108 @@ class Scorer:
         model = implied
         reasons = []
         warnings = []
+        safe_mode = _is_safe_mode()
+        point = _as_float(outcome.point)
+        odds = _as_float(outcome.price, 0)
 
         if self.min <= outcome.price <= self.max:
-            model += 4
-            reasons.append('Koeffitsient konservativ diapazonda.')
+            model += 3
+            reasons.append('Koeffitsient ruxsat etilgan diapazonda.')
         else:
-            model -= 6
+            model -= 8
             warnings.append('Koeffitsient tavsiya diapazonidan tashqarida.')
+
+        if safe_mode:
+            safe_min = float(getattr(settings, 'safe_min_odds', 1.08))
+            safe_max = float(getattr(settings, 'safe_max_odds', 1.45))
+            safe_target = float(getattr(settings, 'safe_target_odds', 1.25))
+
+            if safe_min <= odds <= safe_max:
+                model += 8
+                reasons.append('SAFE MODE: kichik odds — yuqori ehtimol strategiyasi.')
+                model -= abs(odds - safe_target) * 8
+            else:
+                model -= 16
+                warnings.append('SAFE MODE: odds xavfsiz diapazondan tashqarida.')
 
         data_quality = str(enrich.get('data_quality', 'odds_only'))
         if data_quality.startswith('api_sports_'):
-            model += 4
+            model += 3
             reasons.append('API-Sports mapping topildi.')
         else:
             model -= 2
             warnings.append(enrich.get('warning') or 'API-Sports mapping topilmadi.')
 
         if market.synthetic:
-            model -= 10
+            model -= 12
             warnings.append('Synthetic market xavfli, ball pasaytirildi.')
 
         if market.key == 'h2h':
             if event.sport_key.startswith('tennis'):
-                model += 5
+                model += 4
             elif event.sport_key.startswith('basketball'):
                 model += 3
+            elif event.sport_key.startswith('soccer'):
+                if safe_mode and odds <= float(getattr(settings, 'safe_max_odds', 1.45)):
+                    model += 5
+                    reasons.append('SAFE MODE: futbol favorit g‘alabasi kichik odds bilan baholandi.')
+                else:
+                    model += 1
             else:
-                model += 2
+                model += 1
 
         if market.key == 'spreads':
-            model += 2
-            reasons.append('Spread market qo‘shimcha xavf bilan baholandi.')
+            if point is None:
+                model -= 10
+                warnings.append('Spread line topilmadi.')
+            elif event.sport_key.startswith('basketball'):
+                if point >= float(getattr(settings, 'safe_basketball_min_plus_spread', 5.5)):
+                    model += 9
+                    reasons.append('SAFE MODE: basketbol plus handicap himoyali.')
+                elif point >= 0:
+                    model += 2
+                    warnings.append('Basketbol plus handicap kichik, ehtiyot bo‘lish kerak.')
+                else:
+                    model -= 12 if safe_mode else 4
+                    warnings.append('Basketbolda minus spread express uchun xavfli.')
+            elif event.sport_key.startswith('soccer'):
+                if point >= 0:
+                    model += 8
+                    reasons.append('SAFE MODE: futbol AH 0/+ handicap himoyali.')
+                else:
+                    model -= 14 if safe_mode else 5
+                    warnings.append('Futbolda minus handicap SAFE MODE uchun xavfli.')
+            else:
+                model += 1
 
         if market.key == 'totals':
-            if event.sport_key.startswith('basketball'):
-                model += 1
-                reasons.append('Basketbol total marketi ehtiyotkor baholandi.')
+            if safe_mode or getattr(settings, 'safe_disable_totals', True):
+                model -= 22
+                warnings.append('SAFE MODE: totals market o‘chirildi/xavfli deb baholandi.')
+                if event.sport_key.startswith('basketball'):
+                    model -= 8
+                    warnings.append('NBA/WNBA totals juda volatil.')
             else:
-                model += 2
+                if event.sport_key.startswith('basketball'):
+                    model -= 2
+                    warnings.append('Basketbol total marketi ehtiyotkor baholandi.')
+                else:
+                    model += 1
 
         if market.key == 'first_half_totals':
-            model -= 2
-            warnings.append('1-yarm total faqat qo‘shimcha/synthetic taxmin sifatida baholandi.')
+            model -= 18 if safe_mode else 4
+            warnings.append('1-yarm total xavfli/synthetic taxmin sifatida baholandi.')
 
-        point = _as_float(outcome.point)
         if point is not None:
             reasons.append(f'Line: {point:g}')
 
             if market.key == 'totals' and event.sport_key.startswith('basketball'):
                 pick = str(outcome.name).lower()
                 if 'under' in pick and point < 215:
-                    model -= 6
+                    model -= 8
                     warnings.append('Basketbol Under line past: xavf oshirildi.')
                 if 'over' in pick and point > 245:
-                    model -= 5
+                    model -= 7
                     warnings.append('Basketbol Over line juda yuqori: xavf oshirildi.')
 
         if adj:
@@ -192,18 +244,25 @@ class Scorer:
         if note:
             reasons.append(note)
 
-        model = clamp(model, 1, 90)
+        model = clamp(model, 1, 88 if safe_mode else 90)
         edge = model - implied
         anom, anom_warnings = Anomaly.score(outcome.price, previous, model)
         warnings.extend(anom_warnings)
 
-        conf = int(clamp(
-            48 + (model - 50) * 1.05 + edge * 1.10 - anom * 0.35,
-            1,
-            92,
-        ))
+        if safe_mode:
+            conf = int(clamp(
+                42 + (model - 50) * 0.82 + edge * 0.75 - anom * 0.55,
+                1,
+                89,
+            ))
+        else:
+            conf = int(clamp(
+                48 + (model - 50) * 1.05 + edge * 1.10 - anom * 0.35,
+                1,
+                92,
+            ))
 
-        risk = 'Past/o‘rtacha' if conf >= 84 and anom < 30 else 'O‘rtacha' if conf >= 78 else 'Yuqori'
+        risk = 'Past' if conf >= 82 and anom <= 10 else 'Past/o‘rtacha' if conf >= 76 and anom <= 20 else 'O‘rtacha' if conf >= 70 else 'Yuqori'
 
         return Analysis(
             event.event_id,
