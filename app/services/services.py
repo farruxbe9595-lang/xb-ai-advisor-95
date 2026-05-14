@@ -13,6 +13,15 @@ from app.core.engines import (
 from app.services.openai_services import AIValidator, Explainer
 
 
+def _as_float(value, default=None):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
 class SignalService:
     def __init__(self, repo, notifier, api_sports):
         self.repo = repo
@@ -34,11 +43,17 @@ class SignalService:
         self.explainer = Explainer(settings.openai_api_key, settings.openai_model)
 
     def _enabled_markets(self):
-        return {
+        markets = {
             x.strip()
             for x in str(getattr(settings, "enabled_markets", settings.odds_markets)).split(",")
             if x.strip()
         }
+
+        if getattr(settings, "safe_mode", False) and getattr(settings, "safe_disable_totals", True):
+            markets.discard("totals")
+            markets.discard("first_half_totals")
+
+        return markets
 
     def market_enabled(self, key):
         return key in self._enabled_markets()
@@ -54,8 +69,55 @@ class SignalService:
             and a.stake_amount > 0
         )
 
+    def is_safe_candidate(self, a):
+        if not getattr(settings, "safe_mode", False):
+            return True
+
+        odds = _as_float(a.odds, 999)
+        line = _as_float(a.line)
+        sport = str(a.sport_key)
+        market = str(a.market_key)
+
+        if market in {"totals", "first_half_totals"}:
+            return False
+
+        if not (settings.safe_min_odds <= odds <= settings.safe_max_odds):
+            return False
+
+        if a.confidence < settings.safe_min_confidence:
+            return False
+
+        if a.anomaly_score > settings.safe_max_anomaly_score:
+            return False
+
+        if sport.startswith("soccer"):
+            if market == "h2h":
+                return bool(settings.safe_football_allow_h2h_favorite and odds <= settings.safe_max_odds)
+            if market == "spreads":
+                if line is None:
+                    return False
+                if settings.safe_reject_negative_spread and line < 0:
+                    return False
+                return bool(settings.safe_football_allow_non_negative_spread and line >= 0)
+            return False
+
+        if sport.startswith("basketball"):
+            if market == "h2h":
+                return bool(settings.safe_basketball_allow_h2h_favorite and odds <= settings.safe_max_odds)
+            if market == "spreads":
+                if line is None:
+                    return False
+                return line >= settings.safe_basketball_min_plus_spread
+            return False
+
+        # Tennis/other sports: only very low-risk h2h favorite.
+        return market == "h2h" and odds <= settings.safe_max_odds
+
     def passes_express(self, a):
         if not self.passes(a):
+            return False
+
+        if not self.is_safe_candidate(a):
             return False
 
         return (
@@ -95,7 +157,7 @@ class SignalService:
         return data
 
     async def best_analysis_for_event(self, event):
-        if getattr(settings, "enable_synthetic_half_totals", False):
+        if getattr(settings, "enable_synthetic_half_totals", False) and not getattr(settings, "safe_mode", False):
             add_synthetic_half(event)
 
         enrich_data = await self.enrich(event)
@@ -134,29 +196,57 @@ class SignalService:
         if not analyses:
             return None
 
+        if getattr(settings, "safe_mode", False):
+            analyses = [a for a in analyses if self.is_safe_candidate(a)]
+
+        if not analyses:
+            return None
+
+        target = float(getattr(settings, "safe_target_odds", 1.25) if getattr(settings, "safe_mode", False) else 1.60)
         analyses.sort(
             key=lambda x: (
-                x.confidence,
-                x.ai_validator_score,
-                x.value_edge,
-                -x.anomaly_score,
-                -abs(float(x.odds) - 1.60),
+                x.confidence * 0.60
+                + x.ai_validator_score * 0.35
+                + x.value_edge * 0.35
+                - x.anomaly_score * 1.20
+                - abs(float(x.odds) - target) * 10.0
+                + self._market_safety_bonus(x)
             ),
             reverse=True,
         )
 
         return analyses[0]
 
+    def _market_safety_bonus(self, a):
+        if not getattr(settings, "safe_mode", False):
+            return 0.0
+
+        market = str(a.market_key)
+        sport = str(a.sport_key)
+        line = _as_float(a.line)
+
+        bonus = 0.0
+        if market == "spreads" and line is not None:
+            if sport.startswith("soccer") and line >= 0:
+                bonus += 8.0
+            if sport.startswith("basketball") and line >= settings.safe_basketball_min_plus_spread:
+                bonus += 7.0
+        if market == "h2h" and float(a.odds) <= settings.safe_target_odds + 0.08:
+            bonus += 4.0
+        return bonus
+
     def build_express_coupon(self, candidates):
         filtered = [x for x in candidates if self.passes_express(x)]
+        target = float(getattr(settings, "safe_target_odds", 1.25) if getattr(settings, "safe_mode", False) else 1.60)
 
         filtered.sort(
             key=lambda x: (
-                x.confidence * 0.45
-                + x.ai_validator_score * 0.30
-                + x.value_edge * 1.20
-                - x.anomaly_score * 0.65
-                - abs(float(x.odds) - 1.60) * 4.0
+                x.confidence * 0.60
+                + x.ai_validator_score * 0.45
+                + x.value_edge * 0.40
+                - x.anomaly_score * 1.50
+                - abs(float(x.odds) - target) * 14.0
+                + self._market_safety_bonus(x)
             ),
             reverse=True,
         )
@@ -204,6 +294,7 @@ class SignalService:
         print(f"[SIGNAL] sports={sport_list}")
         print(f"[SIGNAL] enabled_markets={sorted(self._enabled_markets())}")
         print(f"[SIGNAL] express_mode={settings.express_mode}")
+        print(f"[SIGNAL] safe_mode={getattr(settings, 'safe_mode', False)}")
 
         for sport_key in sport_list:
             try:
@@ -285,8 +376,8 @@ class SignalService:
             if not self.passes_express(best):
                 print(
                     f"[EXPRESS FILTERED] {best.sport_key} | {best.match_name} | "
-                    f"conf={best.confidence} ai={best.ai_validator_score} edge={best.value_edge} "
-                    f"anom={best.anomaly_score} odds={best.odds}"
+                    f"market={best.market_key} line={best.line} conf={best.confidence} ai={best.ai_validator_score} "
+                    f"edge={best.value_edge} anom={best.anomaly_score} odds={best.odds}"
                 )
                 continue
 
