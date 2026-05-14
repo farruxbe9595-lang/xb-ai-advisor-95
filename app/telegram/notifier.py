@@ -34,7 +34,9 @@ class TelegramNotifier:
         if str(a.ai_validator_verdict).upper() in {'DISABLED', 'OFF'}:
             ai_validator_text = 'O‘chirilgan'
 
-        text = f"""🎯 <b>AI SPORTS ADVISOR SIGNAL</b>
+        title = '🛡 <b>AI SAFE SIGNAL</b>' if getattr(settings, 'safe_mode', False) else '🎯 <b>AI SPORTS ADVISOR SIGNAL</b>'
+
+        text = f"""{title}
 
 🆔 <b>Signal ID:</b> {esc(signal_code)}
 
@@ -80,7 +82,7 @@ class TelegramNotifier:
         max_anomaly = max(int(x.anomaly_score) for x in legs)
         stake_amount = settings.bankroll * settings.express_stake_percent / 100
         uz_now = datetime.utcnow() + timedelta(hours=settings.timezone_offset_hours)
-        coupon_id = f"EXP-{uz_now.strftime('%Y%m%d-%H%M')}"
+        coupon_id = f"SAFE-{uz_now.strftime('%Y%m%d-%H%M')}" if getattr(settings, 'safe_mode', False) else f"EXP-{uz_now.strftime('%Y%m%d-%H%M')}"
 
         rows = []
         for i, a in enumerate(legs, start=1):
@@ -96,7 +98,10 @@ class TelegramNotifier:
 💰 Odds: <b>{a.odds:.2f}</b> | 🔐 Conf: {a.confidence}% | 🧠 AI: {a.ai_validator_score}/100 | 🚨 Anomaly: {a.anomaly_score}/100"""
             )
 
-        text = f"""🎯 <b>AI EXPRESS COUPON</b>
+        title = "🛡 <b>AI SAFE EXPRESS</b>" if getattr(settings, 'safe_mode', False) else "🎯 <b>AI EXPRESS COUPON</b>"
+        strategy = "Maqsad: katta koeffitsient emas, maksimal yutish ehtimoli." if getattr(settings, 'safe_mode', False) else "Maqsad: saralangan 2-leg express."
+
+        text = f"""{title}
 
 🧾 <b>Coupon ID:</b> {esc(coupon_id)}
 🔢 <b>Legs:</b> {len(legs)}
@@ -105,13 +110,16 @@ class TelegramNotifier:
 🧠 <b>Avg AI score:</b> {avg_ai:.1f}/100
 🚨 <b>Max anomaly:</b> {max_anomaly}/100
 💵 <b>Stake suggestion:</b> {stake_amount:.2f} ({settings.express_stake_percent:.2f}% bankroll)
+🧭 <b>Strategy:</b> {esc(strategy)}
 
 """ + "\n\n".join(rows) + """
 
-<b>Express qoidasi:</b>
-✅ Har bir o‘yindan faqat 1 ta pick
-✅ Faqat past anomaly va yuqori confidence
-✅ Bitta leg yutqazsa butun kupon yutqazadi
+<b>SAFE EXPRESS qoidasi:</b>
+✅ Faqat konservativ market
+✅ Kichik odds = yuqori ehtimol
+✅ Past anomaly
+✅ 2 ta o‘yin maksimum
+✅ Totals marketdan qochiladi
 
 <i>Bu avtomatik pul tikish emas. Yakuniy qaror operatorniki.</i>"""
 
